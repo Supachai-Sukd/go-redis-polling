@@ -7,27 +7,24 @@ import (
 	"time"
 
 	"go_polling_jobs/queue"
-	"go_polling_jobs/worker"
 	"go_polling_jobs/recovery"
+	"go_polling_jobs/worker"
 
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
 
-// GenerateRandomID สร้างเลขสุ่มแบบไม่ติดลบ
 func GenerateRandomID() string {
 	rand.Seed(time.Now().UnixNano())
 	return fmt.Sprintf("%d", rand.Intn(1000000))
 }
 
-// GenerateTransactionID สร้าง TransactionID ที่เป็นเลขสุ่ม + "txn_"
 func GenerateTransactionID() string {
 	rand.Seed(time.Now().UnixNano())
 	return fmt.Sprintf("txn_%d", rand.Intn(1000000))
 }
 
 func main() {
-	// เชื่อมต่อ DB
 	dsn := "host=localhost user=postgres password=123456 dbname=go_polling port=5432 sslmode=disable"
 	db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
 	if err != nil {
@@ -39,7 +36,7 @@ func main() {
 	}
 	log.Println("Database migrated successfully!")
 
-	// เชื่อมต่อ Redis
+	// connect Redis
 	redisAddr := "localhost:6379"
 	redisClient := queue.NewRedisClient(redisAddr)
 
@@ -47,7 +44,7 @@ func main() {
 	go worker.StartWorker(db, redisClient)
 	go recovery.StartWorker(db, redisClient)
 
-	// ตัวอย่างการเพิ่ม task เข้า queue
+	// add queue
 	payload := queue.PollingTask{
 		ID:            GenerateRandomID(),
 		TransactionID: GenerateTransactionID(),
