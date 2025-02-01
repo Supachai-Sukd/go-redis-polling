@@ -44,15 +44,17 @@ func main() {
 	go worker.StartWorker(db, redisClient)
 	go recovery.StartWorker(db, redisClient)
 
-	// add queue
-	payload := queue.PollingTask{
-		ID:            GenerateRandomID(),
-		TransactionID: GenerateTransactionID(),
-	}
-	if err := queue.EnqueueTask(redisClient, payload); err != nil {
-		log.Fatalf("Failed to enqueue task: %v", err)
-	} else {
-		log.Println("Task enqueued successfully!")
+	for i := 0; i < 50; i++ {
+		// add queue
+		payload := queue.PollingTask{
+			ID:            GenerateRandomID(),
+			TransactionID: GenerateTransactionID(),
+		}
+		if err := queue.EnqueueTask(redisClient, payload); err != nil {
+			log.Fatalf("Failed to enqueue task: %v", err)
+		} else {
+			log.Println("Task enqueued successfully!")
+		}
 	}
 
 	select {} // Keep the program running
