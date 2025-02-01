@@ -3,124 +3,67 @@ package worker
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log"
 	"time"
 
-	"go_polling_jobs/queue"
-
-	"github.com/go-redis/redis/v8"
-	"gorm.io/gorm"
+	"github.com/hibiken/asynq"
 )
 
-type Transaction struct {
-	ID            uint   `gorm:"primaryKey"`
-	TransactionID string `gorm:"column:transaction_id"`
-	PollingStatus string `gorm:"column:polling_status"`
+// ใช้ task type เดียวกับที่ประกาศใน queue package
+const TypeEmailDelivery = "email:deliver"
+
+// redisOpt สำหรับเชื่อมต่อ Redis
+var redisOpt = asynq.RedisClientOpt{
+	Addr: "127.0.0.1:6379",
 }
 
-type PollingWorker struct {
-	DB    *gorm.DB
-	Redis *redis.Client
+// EmailPayload คือข้อมูลสำหรับส่งอีเมล
+type EmailPayload struct {
+	Email   string `json:"email"`
+	Subject string `json:"subject"`
+	Body    string `json:"body"`
 }
 
-const (
-	RECOVERY_USER_TRANSFER_TIME = 10
-)
-
-func StartWorker(db *gorm.DB, redisClient *redis.Client) {
-	worker := &PollingWorker{
-		DB:    db,
-		Redis: redisClient,
-	}
-
-	log.Println("Starting worker...")
-	for {
-		worker.ProcessTask()
-		time.Sleep(1 * time.Second) // delay 1 วินาที
-	}
+// JobPayload คือ payload ของ task ที่จะ process
+type JobPayload struct {
+	EmailPayload EmailPayload `json:"email"`
+	Duration     int          `json:"duration"`
 }
 
-// ProcessTask for process task
-func (w *PollingWorker) ProcessTask() {
-	ctx := context.Background()
-
-	// get task from queue
-	result, err := w.Redis.BRPop(ctx, 0, queue.JobQueue).Result()
-	if err != nil {
-		log.Printf("Failed to pop task from queue: %v", err)
-		return
+// handleEmailDeliveryTask เป็น handler สำหรับ process task
+func handleEmailDeliveryTask(ctx context.Context, t *asynq.Task) error {
+	var payload JobPayload
+	if err := json.Unmarshal(t.Payload(), &payload); err != nil {
+		return fmt.Errorf("cannot unmarshal payload: %v", err)
 	}
 
-	var payload queue.PollingTask
-	if err := json.Unmarshal([]byte(result[1]), &payload); err != nil {
-		log.Printf("Failed to parse task payload: %v", err)
-		// example for handle task failed
-		if err := w.handleTaskFailure(ctx, payload); err != nil {
-			log.Printf("Task failed: %v", err)
-			return
-		}
-		return
-	}
+	log.Printf("Processing task: Type=%s, Payload=%+v", t.Type(), payload)
 
-	log.Printf("Processing task: ID=%s, TransactionID=%s\n", payload.ID, payload.TransactionID)
+	// จำลองการประมวลผล task ด้วยการ sleep ตามระยะเวลาที่ระบุ
+	time.Sleep(time.Duration(payload.Duration) * time.Second)
 
-	newTransaction := Transaction{
-		TransactionID: payload.TransactionID,
-		PollingStatus: "ProcessorCheckUserTransfer",
-	}
-
-	if err := w.DB.Create(&newTransaction).Error; err != nil {
-		log.Printf("Failed to insert new transaction: %v", err)
-		return
-	}
-
-	log.Printf("Transaction created successfully: ID=%s", payload.TransactionID)
-}
-
-func (w *PollingWorker) handleTaskFailure(ctx context.Context, payload queue.PollingTask) error {
-	log.Print("Condition task failed")
-	// delete current task and then push to recovery queue with moveTaskToRecoveryQueue
-	if err := w.removeTaskFromQueue(ctx, payload); err != nil {
-		return err
-	}
-
-	if err := w.moveTaskToRecoveryQueue(ctx, payload); err != nil {
-		return err
-	}
-
-	return nil
-
-}
-
-func (w *PollingWorker) removeTaskFromQueue(ctx context.Context, payload queue.PollingTask) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
-
-	if err := w.Redis.LRem(ctx, queue.JobQueue, 0, data).Err(); err != nil {
-		return err
-	}
-
-	log.Printf("Task removed from queue: ID=%s", payload.ID)
+	log.Println("Task processed successfully")
 	return nil
 }
 
-func (w *PollingWorker) moveTaskToRecoveryQueue(ctx context.Context, payload queue.PollingTask) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return err
-	}
+// RunWorker เริ่ม worker เพื่อ process task จาก queue
+func RunWorker() {
+	srv := asynq.NewServer(
+		redisOpt,
+		asynq.Config{
+			Concurrency: 10,
+			Queues: map[string]int{
+				"default": 1,
+			},
+		},
+	)
 
-	if err := w.Redis.LPush(ctx, queue.JobQueueRecovery, data).Err(); err != nil {
-		return err
-	}
+	mux := asynq.NewServeMux()
+	mux.HandleFunc(TypeEmailDelivery, handleEmailDeliveryTask)
 
-	err = w.Redis.Set(ctx, "pollingQueue:repeat:"+payload.ID, data, time.Duration(RECOVERY_USER_TRANSFER_TIME)*time.Second).Err()
-	if err != nil {
-		return err
+	log.Println("Worker started")
+	if err := srv.Run(mux); err != nil {
+		log.Fatalf("Could not run worker: %v", err)
 	}
-
-	log.Printf("Task moved to failed queue: ID=%s", payload.ID)
-	return nil
 }
